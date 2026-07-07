@@ -1,15 +1,14 @@
+<!DOCTYPE html>
+<html>
 <head>
+    <meta charset="UTF-8">
     <script type="importmap">{ "imports": {
     "three": "https://esm.sh/three",
     "three/": "https://esm.sh/three/"
   }}</script>
-
-    <!--  <script type="module"> import * as THREE from 'three'; window.THREE = THREE;</script>-->
-    <!--  <script src="../../dist/three-globe.js" defer></script>-->
-
     <style>
-        body { margin: 0; }
-
+        body { margin: 0; overflow: hidden; background: #000; }
+        #globeViz { width: 100vw; height: 100vh; }
         #time-log {
             position: absolute;
             font-size: 12px;
@@ -21,12 +20,41 @@
             bottom: 10px;
             right: 10px;
         }
+        #info-box {
+            display: none;
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 280px;
+            padding: 16px;
+            border-radius: 8px;
+            background: rgba(10, 15, 30, 0.9);
+            color: #e8ecff;
+            font-family: sans-serif;
+            font-size: 13px;
+            line-height: 1.6;
+            border: 1px solid rgba(120, 160, 255, 0.4);
+            box-shadow: 0 0 20px rgba(80, 120, 255, 0.3);
+        }
+        #info-box h3 { margin: 0 0 8px 0; color: #7fd0ff; font-size: 15px; }
+        #info-box .row { display: flex; justify-content: space-between; }
+        #info-box .row span:first-child { color: #8fa0c0; }
+        #close-btn { position: absolute; top: 8px; right: 12px; cursor: pointer; color: #8fa0c0; font-size: 16px; }
     </style>
 </head>
-
 <body>
 <div id="globeViz"></div>
 <div id="time-log"></div>
+<div id="info-box">
+    <span id="close-btn">✕</span>
+    <h3 id="info-name"></h3>
+    <div class="row"><span>NORAD ID</span><span id="info-id"></span></div>
+    <div class="row"><span>Inclination</span><span id="info-inc"></span></div>
+    <div class="row"><span>Eccentricity</span><span id="info-ecc"></span></div>
+    <div class="row"><span>Mean Motion</span><span id="info-mm"></span></div>
+    <div class="row"><span>Altitude</span><span id="info-alt"></span></div>
+    <div class="row"><span>Epoch</span><span id="info-epoch"></span></div>
+</div>
 
 <script type="module">
     import ThreeGlobe from 'https://esm.sh/three-globe?external=three';
@@ -34,93 +62,162 @@
     import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js?external=three';
     import * as satellite from 'https://esm.sh/satellite.js';
 
-    const EARTH_RADIUS_KM = 6371; // km
-    const TIME_STEP = 1.5 * 1000; // per frame
+    const EARTH_RADIUS_KM = 6371;
 
     const timeLogger = document.getElementById('time-log');
+    const infoBox = document.getElementById('info-box');
+    document.getElementById('close-btn').onclick = () => infoBox.style.display = 'none';
 
     const Globe = new ThreeGlobe()
-        .globeImageUrl('//cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg')
-        .particleLat('lat')
-        .particleLng('lng')
-        .particleAltitude('alt')
-        .particlesSize(2);
+        .globeImageUrl('//cdn.jsdelivr.net/npm/three-globe/example/img/earth-blue-marble.jpg');
 
+    // Custom particle system (raw THREE.Points), updated in place each frame
+    // instead of calling Globe.particlesData() (which does a full rebuild
+    // every call and was causing the stutter/freeze).
+    let particlePositions = null;
+    let particlePoints = null;
+    const particleMaterial = new THREE.PointsMaterial({
+        size: 1.6,
+        sizeAttenuation: true,
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false
+    });
     new THREE.TextureLoader().load('./sat-icon.png', texture => {
         texture.colorSpace = THREE.SRGBColorSpace;
-        Globe.particlesTexture(texture);
+        particleMaterial.map = texture;
+        particleMaterial.needsUpdate = true;
     });
 
-    fetch('./space-track-leo.txt').then(r => r.text()).then(rawData => {
-        const tleData = rawData.replace(/\r/g, '').split(/\n(?=[^12])/).map(tle => tle.split('\n'));
-        const satData = tleData.map(([name, ...tle]) => ({
-            satrec: satellite.twoline2satrec(...tle),
-            name: name.trim().replace(/^0 /, '')
-        }))
-            // exclude those that can't be propagated
-            .filter(d => !!satellite.propagate(d.satrec, new Date())?.position);
+    function initParticles(count) {
+        const geometry = new THREE.BufferGeometry();
+        particlePositions = new Float32Array(count * 3);
+        geometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+        particlePoints = new THREE.Points(geometry, particleMaterial);
+        Globe.add(particlePoints);
+    }
 
-        // time ticker
-        let time = new Date();
-        (function frameTicker() {
-            requestAnimationFrame(frameTicker);
+    let satData = [];
+    let simTime = new Date(); // shared simulation clock, used by both the
+    // particle ticker and the click-to-plot path,
+    // so they never disagree on "now"
+    const SIM_SPEED = 20; // sim-seconds per real-second (was ~90x before; tune to taste)
+    let lastFrameMs = performance.now();
 
-            time = new Date(+time + TIME_STEP);
-            timeLogger.innerText = time.toString();
+    function showInfoBox(d) {
+        document.getElementById('info-name').innerText = d.name;
+        document.getElementById('info-id').innerText = d.omm.NORAD_CAT_ID;
+        document.getElementById('info-inc').innerText = d.omm.INCLINATION.toFixed(2) + '°';
+        document.getElementById('info-ecc').innerText = d.omm.ECCENTRICITY.toFixed(6);
+        document.getElementById('info-mm').innerText = d.omm.MEAN_MOTION.toFixed(4) + ' rev/day';
+        document.getElementById('info-alt').innerText = (d.alt * EARTH_RADIUS_KM).toFixed(1) + ' km';
+        document.getElementById('info-epoch').innerText = d.omm.EPOCH;
+        infoBox.style.display = 'block';
+    }
 
-            // Update satellite positions
-            const gmst = satellite.gstime(time);
-            satData.forEach(d => {
-                const eci = satellite.propagate(d.satrec, time);
-                if (eci?.position) {
-                    const gdPos = satellite.eciToGeodetic(eci.position, gmst);
-                    d.lat = satellite.radiansToDegrees(gdPos.latitude);
-                    d.lng = satellite.radiansToDegrees(gdPos.longitude);
-                    d.alt = gdPos.height / EARTH_RADIUS_KM
-                } else {
-                    // explicitly handle invalid position
-                    d.lat = NaN;
-                    d.lng = NaN;
-                    d.alt = NaN;
-                }
-            });
+    fetch('http://localhost:8080/api/satellites')
+        .then(r => r.json())
+        .then(jsonData => {
+            satData = jsonData.map(omm => ({
+                satrec: satellite.json2satrec(omm),
+                name: omm.OBJECT_NAME,
+                omm
+            })).filter(d => !!satellite.propagate(d.satrec, new Date())?.position);
 
-            Globe.particlesData([satData.filter(d => !isNaN(d.lat) && !isNaN(d.lng) && !isNaN(d.alt))]);
-        })();
-    });
+            initParticles(satData.length);
 
-    //
+            (function frameTicker(nowMs) {
+                requestAnimationFrame(frameTicker);
+                const deltaMs = nowMs - lastFrameMs;
+                lastFrameMs = nowMs;
+                simTime = new Date(+simTime + deltaMs * SIM_SPEED);
+                timeLogger.innerText = simTime.toString();
 
-    // Setup renderer
+                const gmst = satellite.gstime(simTime);
+                satData.forEach((d, i) => {
+                    const eci = satellite.propagate(d.satrec, simTime);
+                    if (eci?.position) {
+                        const gdPos = satellite.eciToGeodetic(eci.position, gmst);
+                        d.lat = satellite.radiansToDegrees(gdPos.latitude);
+                        d.lng = satellite.radiansToDegrees(gdPos.longitude);
+                        d.alt = gdPos.height / EARTH_RADIUS_KM;
+                        const { x, y, z } = Globe.getCoords(d.lat, d.lng, d.alt);
+                        particlePositions[i * 3] = x;
+                        particlePositions[i * 3 + 1] = y;
+                        particlePositions[i * 3 + 2] = z;
+                    } else {
+                        d.lat = NaN; d.lng = NaN; d.alt = NaN;
+                        // park invalid points at the globe's center - hidden
+                        // behind the sphere instead of showing stale data
+                        particlePositions[i * 3] = 0;
+                        particlePositions[i * 3 + 1] = 0;
+                        particlePositions[i * 3 + 2] = 0;
+                    }
+                });
+                particlePoints.geometry.attributes.position.needsUpdate = true;
+            })(lastFrameMs);
+        });
+
     const renderer = new THREE.WebGLRenderer();
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
     document.getElementById('globeViz').appendChild(renderer.domElement);
 
-    // Setup scene
     const scene = new THREE.Scene();
     scene.add(Globe);
     scene.add(new THREE.AmbientLight(0xcccccc, Math.PI));
     scene.add(new THREE.DirectionalLight(0xffffff, 0.6 * Math.PI));
 
-    // Setup camera
     const camera = new THREE.PerspectiveCamera();
-    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     camera.position.z = 400;
 
-    // Add camera controls
     const tbControls = new TrackballControls(camera, renderer.domElement);
     tbControls.minDistance = 101;
     tbControls.rotateSpeed = 5;
     tbControls.zoomSpeed = 0.8;
 
-    // Kick-off renderer
-    (function animate() { // IIFE
-        // Frame cycle
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Click detection (after renderer/scene/camera exist)
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    renderer.domElement.addEventListener('click', (event) => {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(Globe, true);
+        if (intersects.length === 0) return;
+
+        const clickPoint = intersects[0].point;
+        let closest = null;
+        let minDist = Infinity;
+
+        satData.forEach(d => {
+            if (isNaN(d.lat)) return;
+            const pos = Globe.getCoords(d.lat, d.lng, d.alt);
+            const dist = clickPoint.distanceTo(new THREE.Vector3(pos.x, pos.y, pos.z));
+            if (dist < minDist) { minDist = dist; closest = d; }
+        });
+
+        if (closest && minDist < 5) {
+            showInfoBox(closest);
+        }
+    });
+
+    (function animate() {
         tbControls.update();
         renderer.render(scene, camera);
         requestAnimationFrame(animate);
     })();
 </script>
 </body>
+</html>

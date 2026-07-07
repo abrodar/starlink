@@ -40,16 +40,17 @@ public class SatelliteService {
 
     public boolean syncFromCelesTrak() {
         List<Satellite> gp_data = celestrakRestClient.getCelesTrak();
+        // System.out.println(System.getProperty("user.dir"));
         if (gp_data.isEmpty()) {
             return false;
         }
-        for (Satellite satellite : gp_data) {
-            System.out.println(satellite);
-        }
+        satelliteRepository.saveAll(gp_data);
+        System.out.println("Satellite GP data successfully inserted into the database.");
+        /*
         ObjectMapper om = new ObjectMapper();
-        File file = new File("../../../../../resources/gp_data_starlink.json");
+        File file = new File(System.getProperty("user.dir"), "resources/gp_data_starlink.json"); // user.dir - user current working directory !
         om.writeValue(file, gp_data);
-        System.out.println("File saved to: " + file.getAbsolutePath());
+        System.out.println("File saved to: " + file.getAbsolutePath());*/
         return true;
     }
 }
