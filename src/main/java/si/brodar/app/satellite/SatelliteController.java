@@ -1,6 +1,9 @@
 package si.brodar.app.satellite;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.*;
 
 
@@ -22,6 +25,11 @@ public class SatelliteController {
     @GetMapping
     public List<Satellite> getAllSatellites() {
         return satelliteService.getAllSatellites();
+    }
+
+    @GetMapping("/all")
+    public Page<Satellite> getAllSatellitesC(@PageableDefault(size = 20, sort = "noradCatId")Pageable pageable) {
+        return satelliteService.getAllSatellitesC(pageable);
     }
 
     @GetMapping("/{id}")

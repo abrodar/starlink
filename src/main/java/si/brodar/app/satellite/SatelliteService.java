@@ -1,11 +1,10 @@
 package si.brodar.app.satellite;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
-import tools.jackson.databind.ObjectMapper;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.List;
 
 @Service
@@ -52,5 +51,9 @@ public class SatelliteService {
         om.writeValue(file, gp_data);
         System.out.println("File saved to: " + file.getAbsolutePath());*/
         return true;
+    }
+
+    public Page<Satellite> getAllSatellitesC(Pageable pageable) {
+        return satelliteRepository.findAll(pageable);
     }
 }

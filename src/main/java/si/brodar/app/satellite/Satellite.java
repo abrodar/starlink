@@ -182,7 +182,7 @@ public class Satellite {
     }
 
     public void setMeanMotionDot(double meanMotionDot) {
-        this.meanMotionDdot = meanMotionDot;
+        this.meanMotionDot = meanMotionDot;
     }
 
     public double getMeanMotionDot() {
