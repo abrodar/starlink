@@ -118,7 +118,7 @@
         infoBox.style.display = 'block';
     }
 
-    fetch('http://localhost:8080/api/satellites')
+    fetch('/api/satellites')
         .then(r => r.json())
         .then(jsonData => {
             satData = jsonData.map(omm => ({
